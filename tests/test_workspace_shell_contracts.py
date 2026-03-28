@@ -50,37 +50,52 @@ def test_routes_contract_exposes_the_four_stable_shell_surfaces():
     )
 
 
-def test_snapshot_contract_freezes_v2_entities_boards_and_hierarchy():
+def test_snapshot_contract_freezes_v3_entities_integrations_and_hierarchy():
     contracts_source = read_text("desktop/src/shared/contracts/index.js")
 
     assert_contains(
         contracts_source,
-        "WORKSPACE_STORAGE_VERSION = 2",
+        "WORKSPACE_STORAGE_VERSION = 3",
+        "WorkspaceSnapshot v3 stores all shared workspace records",
         "export const WorkspaceProject",
         "export const WorkspaceTask",
         "export const WorkspaceIdea",
         "export const WorkspaceFile",
-        "boards:",
-        "fileHierarchy:",
-        "rootFileIds",
-        "createWorkspaceProject",
-        "normalizeWorkspaceSnapshotV2",
-        '"file-shell-root"',
-        '"file-shell-guide"',
+        "export const WorkspaceIntegrationRecord",
+        "export const WorkspaceJakalFlowIntegration",
+        "export const WorkspaceGitHubIntegration",
+        "integrations:",
+        "normalizeWorkspaceSnapshotV3",
+        "normalizeWorkspaceSnapshotV2 = normalizeWorkspaceSnapshotV3",
+        '"jakal-flow-project-shell"',
+        '"github-project-shell"',
     )
 
 
-def test_repository_adapter_normalizes_v2_writes_and_shared_helpers():
+def test_repository_adapter_exposes_v3_write_boundary_and_integration_adapter():
     storage_source = read_text("desktop/src/shared/storage/workspaceRepository.js")
+    storage_index_source = read_text("desktop/src/shared/storage/index.js")
 
     assert_contains(
         storage_source,
         "export class WorkspaceRepository",
         "defaultWorkspaceMigrations",
-        "normalizeWorkspaceSnapshotV2",
-        "updateNavigation(routeKey)",
-        "createProject(projectInput = {})",
-        "replaceSnapshot(snapshot)",
+        "normalizeWorkspaceSnapshotV3",
+        "createTask(taskInput = {})",
+        "createIdea(ideaInput = {})",
+        "createFile(fileInput = {})",
+        "assignTaskToProject(taskId, projectId = null)",
+        "moveFile(fileId, nextParentId = null)",
+        "replaceJakalFlowIntegration(integrationInput = {})",
+        "replaceGitHubIntegration(integrationInput = {})",
+        "upsertIntegrationRecord(providerKey, recordInput = {})",
+        "export class WorkspaceIntegrationAdapter",
+        "createWorkspaceIntegrationAdapter(repository)",
+    )
+    assert_contains(
+        storage_index_source,
+        "WorkspaceIntegrationAdapter",
+        "createWorkspaceIntegrationAdapter",
     )
 
 
@@ -123,10 +138,13 @@ def test_surface_route_entry_modules_exist_with_frozen_contract_docstring():
         )
 
 
-def test_repository_runtime_persists_v2_snapshot_and_project_defaults():
+def test_repository_runtime_persists_v3_snapshot_and_relation_safe_mutations():
     result = run_node(
         """
-        import { createWorkspaceRepository } from "./desktop/src/shared/storage/workspaceRepository.js";
+        import {
+          createWorkspaceIntegrationAdapter,
+          createWorkspaceRepository,
+        } from "./desktop/src/shared/storage/index.js";
 
         const storage = {
           cache: new Map(),
@@ -136,45 +154,142 @@ def test_repository_runtime_persists_v2_snapshot_and_project_defaults():
         };
 
         const repository = createWorkspaceRepository({ storage });
+        const adapter = createWorkspaceIntegrationAdapter(repository);
         const seeded = repository.readSnapshot();
-        const created = repository.createProject({
+        const createdProjectSnapshot = repository.createProject({
           title: "Second project",
           summary: "Added during runtime verification.",
         });
-        const updated = repository.updateNavigation("files");
-        const createdProject = created.projects.at(-1);
+        const createdProject = createdProjectSnapshot.projects.at(-1);
+        const createdTaskSnapshot = repository.createTask({
+          title: "Linked task",
+          projectId: createdProject.id,
+          fileIds: ["file-shell-guide"],
+        });
+        const createdTask = createdTaskSnapshot.tasks.at(-1);
+        const createdIdeaSnapshot = repository.createIdea({
+          title: "Growth idea",
+          summary: "Promotable",
+          projectIds: [createdProject.id],
+          taskIds: [createdTask.id],
+        });
+        const createdIdea = createdIdeaSnapshot.ideas.at(-1);
+        const promotedSnapshot = repository.promoteIdeaToProject(createdIdea.id, {
+          title: "Promoted idea project",
+          summary: "Created from idea promotion.",
+        });
+        const promotedIdea = promotedSnapshot.ideas.find((idea) => idea.id === createdIdea.id);
+        const promotedProject = promotedSnapshot.projects.find(
+          (project) => project.id === promotedIdea.promotedProjectId,
+        );
+        const createdFolderSnapshot = repository.createFile({
+          name: "notes",
+          kind: "folder",
+          projectIds: [createdProject.id],
+        });
+        const createdFolder = createdFolderSnapshot.files.at(-1);
+        const createdFileSnapshot = repository.createFile({
+          name: "brief.md",
+          parentId: createdFolder.id,
+          projectIds: [createdProject.id],
+          taskIds: [createdTask.id],
+          ideaIds: [promotedIdea.id],
+        });
+        const createdFile = createdFileSnapshot.files.at(-1);
+        const movedFileSnapshot = repository.moveFile(createdFile.id, "file-shell-root");
+
+        adapter.applyJakalFlowSync({
+          connectionStatus: "connected",
+          workspaceId: "wk-1",
+          workspaceSlug: "ops-shell",
+          records: [
+            {
+              id: "valid-task-sync",
+              entityType: "task",
+              entityId: createdTask.id,
+              externalId: "task-22",
+              externalKey: "TASK-22",
+              title: "Task 22",
+              status: "synced",
+            },
+            {
+              id: "invalid-sync",
+              entityType: "task",
+              entityId: "missing-task",
+              externalId: "task-missing",
+            },
+          ],
+        });
+        const githubSnapshot = adapter.applyGitHubSync({
+          connectionStatus: "connected",
+          installationId: "gh-1",
+          owner: "Ahnd6474",
+          repository: "experiment",
+          records: [
+            {
+              id: "gh-project",
+              entityType: "project",
+              entityId: createdProject.id,
+              externalId: "repo-1",
+              externalKey: "Ahnd6474/experiment",
+              title: "experiment",
+              repository: "Ahnd6474/experiment",
+              branch: "main",
+              status: "synced",
+            },
+          ],
+        });
+        const afterDeleteProject = repository.deleteProject(createdProject.id);
+        const rootFolderAfterMove = movedFileSnapshot.files.find((file) => file.id === "file-shell-root");
+        const deletedTask = afterDeleteProject.tasks.find((task) => task.id === createdTask.id);
+        const deletedFile = afterDeleteProject.files.find((file) => file.id === createdFile.id);
 
         console.log(JSON.stringify({
           seededSchemaVersion: seeded.meta.schemaVersion,
-          seededProjectStatuses: seeded.boards.projects.statusOrder,
-          seededTaskStatus: seeded.tasks[0].status,
-          rootFileIds: seeded.fileHierarchy.rootFileIds,
-          createdProjects: created.projects.length,
+          seededJakalFlowRecords: seeded.integrations.jakalFlow.records.length,
+          seededGitHubRecords: seeded.integrations.github.records.length,
+          seededRootFileIds: seeded.fileHierarchy.rootFileIds,
+          createdProjectId: createdProject.id,
           createdProjectStatus: createdProject.status,
-          createdProjectSlug: createdProject.slug,
-          createdProjectTaskIds: createdProject.taskIds,
-          updatedRoute: updated.navigation.lastRoute,
+          createdTaskId: createdTask.id,
+          createdTaskProjectId: createdTask.projectId,
+          linkedProjectTaskIds: createdTaskSnapshot.projects.find((project) => project.id === createdProject.id).taskIds,
+          promotedIdeaId: promotedIdea.id,
+          promotedIdeaStage: promotedIdea.stage,
+          promotedIdeaProjectId: promotedIdea.promotedProjectId,
+          promotedProjectIdeaIds: promotedProject.ideaIds,
+          movedFileParentId: movedFileSnapshot.files.find((file) => file.id === createdFile.id).parentId,
+          rootFolderChildIds: rootFolderAfterMove.childIds,
+          jakalFlowRecordIds: githubSnapshot.integrations.jakalFlow.records.map((record) => record.id),
+          githubRecordIds: githubSnapshot.integrations.github.records.map((record) => record.id),
+          deletedTaskProjectId: deletedTask.projectId,
+          deletedFileProjectIds: deletedFile.projectIds,
           storedSchemaVersion: JSON.parse(storage.getItem("jakal.workspace.snapshot")).meta.schemaVersion,
         }));
         """
     )
     payload = json.loads(result)
 
-    assert payload == {
-        "seededSchemaVersion": 2,
-        "seededProjectStatuses": ["planned", "active", "paused", "done"],
-        "seededTaskStatus": "in_progress",
-        "rootFileIds": ["file-shell-root"],
-        "createdProjects": 2,
-        "createdProjectStatus": "planned",
-        "createdProjectSlug": "second-project",
-        "createdProjectTaskIds": [],
-        "updatedRoute": "files",
-        "storedSchemaVersion": 2,
-    }
+    assert payload["seededSchemaVersion"] == 3
+    assert payload["seededJakalFlowRecords"] == 2
+    assert payload["seededGitHubRecords"] == 2
+    assert payload["seededRootFileIds"] == ["file-shell-root"]
+    assert payload["createdProjectStatus"] == "planned"
+    assert payload["movedFileParentId"] == "file-shell-root"
+    assert payload["jakalFlowRecordIds"] == ["valid-task-sync"]
+    assert payload["githubRecordIds"] == ["gh-project"]
+    assert payload["deletedTaskProjectId"] is None
+    assert payload["deletedFileProjectIds"] == []
+    assert payload["storedSchemaVersion"] == 3
+    assert payload["createdTaskProjectId"] == payload["createdProjectId"]
+    assert payload["linkedProjectTaskIds"] == [payload["createdTaskId"]]
+    assert payload["promotedIdeaStage"] == "promoted"
+    assert payload["promotedIdeaProjectId"]
+    assert payload["promotedProjectIdeaIds"] == [payload["promotedIdeaId"]]
+    assert "file-shell-guide" in payload["rootFolderChildIds"]
 
 
-def test_repository_migrates_v1_snapshots_to_v2_shape():
+def test_repository_migrates_legacy_snapshot_to_v3_shape():
     result = run_node(
         """
         import { createWorkspaceRepository } from "./desktop/src/shared/storage/workspaceRepository.js";
@@ -189,6 +304,22 @@ def test_repository_migrates_v1_snapshots_to_v2_shape():
               },
               navigation: {
                 lastRoute: "tasks",
+              },
+              jakalFlow: {
+                status: "connected",
+                workspaceId: "legacy-wk",
+                workspaceSlug: "legacy",
+                records: [
+                  {
+                    id: "legacy-project-sync",
+                    entityType: "project",
+                    entityId: "project-legacy",
+                    externalId: "legacy-1",
+                    externalKey: "JKL-1",
+                    title: "Legacy project",
+                    status: "synced",
+                  },
+                ],
               },
               projects: [
                 {
@@ -254,25 +385,29 @@ def test_repository_migrates_v1_snapshots_to_v2_shape():
           projectStatus: snapshot.projects[0].status,
           projectTaskIds: snapshot.projects[0].taskIds,
           taskProjectId: snapshot.tasks[0].projectId,
-          taskOrder: snapshot.tasks[0].order,
           ideaStage: snapshot.ideas[0].stage,
           fileName: snapshot.files[0].name,
           rootFileIds: snapshot.fileHierarchy.rootFileIds,
+          jakalFlowStatus: snapshot.integrations.jakalFlow.connectionStatus,
+          jakalFlowRecordIds: snapshot.integrations.jakalFlow.records.map((record) => record.id),
+          githubStatus: snapshot.integrations.github.connectionStatus,
         }));
         """
     )
     payload = json.loads(result)
 
     assert payload == {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "route": "tasks",
         "projectStatus": "planned",
         "projectTaskIds": ["task-legacy"],
         "taskProjectId": "project-legacy",
-        "taskOrder": 0,
         "ideaStage": "captured",
         "fileName": "legacy.md",
         "rootFileIds": ["file-legacy"],
+        "jakalFlowStatus": "connected",
+        "jakalFlowRecordIds": ["legacy-project-sync"],
+        "githubStatus": "disconnected",
     }
 
 
