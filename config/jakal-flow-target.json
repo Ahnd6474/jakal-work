@@ -1,0 +1,26 @@
+{
+  "contractVersion": 1,
+  "contractDocstring": "Managed Jakal-flow test workspace contract: keep the upstream checkout under `workspace/jakal-flow`, keep generated logs and summaries under `artifacts/`, expose stable entrypoints `bootstrap`, `test-backend`, `test-desktop`, and `test-all`, and report stage results through one shared schema without mutating upstream source files except dependency installs inside the managed checkout.",
+  "source": {
+    "repositoryUrl": "https://github.com/Ahnd6474/Jakal-flow.git"
+  },
+  "workspace": {
+    "root": "workspace",
+    "managedCheckoutRoot": "workspace/jakal-flow"
+  },
+  "artifacts": {
+    "root": "artifacts",
+    "stageResultsRoot": "artifacts/stages",
+    "logsRoot": "artifacts/logs"
+  },
+  "entrypoints": {
+    "bootstrap": "scripts/bootstrap.ps1",
+    "test-backend": "scripts/test-backend.ps1",
+    "test-desktop": "scripts/test-desktop.ps1",
+    "test-all": "scripts/test-all.ps1"
+  },
+  "results": {
+    "schemaVersion": 1,
+    "resultFileName": "result.json"
+  }
+}
