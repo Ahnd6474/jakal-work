@@ -75,17 +75,22 @@ def test_snapshot_contract_freezes_v3_entities_integrations_and_hierarchy():
 def test_repository_adapter_exposes_v3_write_boundary_and_integration_adapter():
     storage_source = read_text("desktop/src/shared/storage/workspaceRepository.js")
     storage_index_source = read_text("desktop/src/shared/storage/index.js")
+    selectors_source = read_text("desktop/src/shared/selectors/index.js")
 
     assert_contains(
         storage_source,
         "export class WorkspaceRepository",
         "defaultWorkspaceMigrations",
         "normalizeWorkspaceSnapshotV3",
+        "moveProject(projectId, movement = {})",
         "createTask(taskInput = {})",
+        "moveTask(taskId, movement = {})",
         "createIdea(ideaInput = {})",
+        "moveIdea(ideaId, movement = {})",
         "createFile(fileInput = {})",
-        "assignTaskToProject(taskId, projectId = null)",
-        "moveFile(fileId, nextParentId = null)",
+        "moveFile(fileId, nextParentId = null, options = {})",
+        "linkEntities(entityType, entityId, relatedEntityType, relatedEntityId)",
+        "unlinkEntities(entityType, entityId, relatedEntityType, relatedEntityId)",
         "replaceJakalFlowIntegration(integrationInput = {})",
         "replaceGitHubIntegration(integrationInput = {})",
         "upsertIntegrationRecord(providerKey, recordInput = {})",
@@ -96,6 +101,15 @@ def test_repository_adapter_exposes_v3_write_boundary_and_integration_adapter():
         storage_index_source,
         "WorkspaceIntegrationAdapter",
         "createWorkspaceIntegrationAdapter",
+    )
+    assert_contains(
+        selectors_source,
+        "export function selectWorkspaceDetail",
+        "export function selectProjectBoard",
+        "export function selectTaskBoard",
+        "export function selectIdeaBoard",
+        "export function selectFileTree",
+        "export function selectIntegrationOverview",
     )
 
 
@@ -138,13 +152,21 @@ def test_surface_route_entry_modules_exist_with_frozen_contract_docstring():
         )
 
 
-def test_repository_runtime_persists_v3_snapshot_and_relation_safe_mutations():
+def test_repository_runtime_persists_v3_snapshot_and_selector_safe_mutations():
     result = run_node(
         """
         import {
           createWorkspaceIntegrationAdapter,
           createWorkspaceRepository,
         } from "./desktop/src/shared/storage/index.js";
+        import {
+          selectFileTree,
+          selectIdeaBoard,
+          selectIntegrationOverview,
+          selectProjectBoard,
+          selectTaskBoard,
+          selectWorkspaceDetail,
+        } from "./desktop/src/shared/selectors/index.js";
 
         const storage = {
           cache: new Map(),
@@ -157,25 +179,45 @@ def test_repository_runtime_persists_v3_snapshot_and_relation_safe_mutations():
         const adapter = createWorkspaceIntegrationAdapter(repository);
         const seeded = repository.readSnapshot();
         const createdProjectSnapshot = repository.createProject({
-          title: "Second project",
-          summary: "Added during runtime verification.",
+          title: "Client hub",
+          summary: "Cross-route mutation verification.",
         });
         const createdProject = createdProjectSnapshot.projects.at(-1);
+        const movedProjectSnapshot = repository.moveProject(createdProject.id, {
+          status: "active",
+          index: 0,
+        });
+        const movedProject = movedProjectSnapshot.projects.find(
+          (project) => project.id === createdProject.id,
+        );
         const createdTaskSnapshot = repository.createTask({
-          title: "Linked task",
-          projectId: createdProject.id,
-          fileIds: ["file-shell-guide"],
+          title: "Wire delivery",
+          summary: "Cross-route task move verification.",
         });
         const createdTask = createdTaskSnapshot.tasks.at(-1);
+        const linkedTaskSnapshot = repository.linkEntities(
+          "project",
+          createdProject.id,
+          "task",
+          createdTask.id,
+        );
+        const movedTaskSnapshot = repository.moveTask(createdTask.id, {
+          status: "in_progress",
+          index: 0,
+        });
         const createdIdeaSnapshot = repository.createIdea({
-          title: "Growth idea",
-          summary: "Promotable",
-          projectIds: [createdProject.id],
-          taskIds: [createdTask.id],
+          title: "Ops launch",
+          summary: "Promotion candidate.",
         });
         const createdIdea = createdIdeaSnapshot.ideas.at(-1);
+        repository.linkEntities("idea", createdIdea.id, "project", createdProject.id);
+        repository.linkEntities("task", createdTask.id, "idea", createdIdea.id);
+        const movedIdeaSnapshot = repository.moveIdea(createdIdea.id, {
+          stage: "validated",
+          index: 0,
+        });
         const promotedSnapshot = repository.promoteIdeaToProject(createdIdea.id, {
-          title: "Promoted idea project",
+          title: "Ops launch project",
           summary: "Created from idea promotion.",
         });
         const promotedIdea = promotedSnapshot.ideas.find((idea) => idea.id === createdIdea.id);
@@ -183,21 +225,35 @@ def test_repository_runtime_persists_v3_snapshot_and_relation_safe_mutations():
           (project) => project.id === promotedIdea.promotedProjectId,
         );
         const createdFolderSnapshot = repository.createFile({
-          name: "notes",
+          name: "briefs",
           kind: "folder",
-          projectIds: [createdProject.id],
         });
         const createdFolder = createdFolderSnapshot.files.at(-1);
+        repository.moveFile(createdFolder.id, "file-shell-root", { index: 0 });
         const createdFileSnapshot = repository.createFile({
-          name: "brief.md",
+          name: "launch.md",
           parentId: createdFolder.id,
-          projectIds: [createdProject.id],
-          taskIds: [createdTask.id],
-          ideaIds: [promotedIdea.id],
         });
         const createdFile = createdFileSnapshot.files.at(-1);
-        const movedFileSnapshot = repository.moveFile(createdFile.id, "file-shell-root");
-
+        repository.linkEntities("file", createdFile.id, "project", createdProject.id);
+        repository.linkEntities("file", createdFile.id, "task", createdTask.id);
+        repository.linkEntities("file", createdFile.id, "idea", promotedIdea.id);
+        const unlinkedFileSnapshot = repository.unlinkEntities(
+          "file",
+          createdFile.id,
+          "idea",
+          promotedIdea.id,
+        );
+        repository.linkEntities("file", createdFile.id, "idea", promotedIdea.id);
+        let cycleError = "";
+        try {
+          repository.moveFile(createdFolder.id, createdFile.id);
+        } catch (error) {
+          cycleError = error.message;
+        }
+        const movedFileSnapshot = repository.moveFile(createdFile.id, "file-shell-root", {
+          index: 0,
+        });
         adapter.applyJakalFlowSync({
           connectionStatus: "connected",
           workspaceId: "wk-1",
@@ -213,55 +269,133 @@ def test_repository_runtime_persists_v3_snapshot_and_relation_safe_mutations():
               status: "synced",
             },
             {
+              id: "valid-idea-sync",
+              entityType: "idea",
+              entityId: createdIdea.id,
+              externalId: "idea-14",
+              externalKey: "IDEA-14",
+              title: "Idea 14",
+              status: "pending",
+              metadata: {
+                lane: "validation",
+              },
+            },
+            {
               id: "invalid-sync",
-              entityType: "task",
-              entityId: "missing-task",
-              externalId: "task-missing",
+              entityType: "project",
+              entityId: "missing-project",
+              externalId: "project-missing",
             },
           ],
         });
-        const githubSnapshot = adapter.applyGitHubSync({
+        adapter.applyGitHubSync({
           connectionStatus: "connected",
           installationId: "gh-1",
           owner: "Ahnd6474",
           repository: "experiment",
           records: [
             {
-              id: "gh-project",
+              id: "github-project-hub",
               entityType: "project",
               entityId: createdProject.id,
               externalId: "repo-1",
-              externalKey: "Ahnd6474/experiment",
-              title: "experiment",
+              externalKey: "Ahnd6474/experiment#client-hub",
+              title: "Client hub",
               repository: "Ahnd6474/experiment",
               branch: "main",
               status: "synced",
+              metadata: {
+                panel: "delivery",
+              },
+            },
+            {
+              id: "github-file-launch",
+              entityType: "file",
+              entityId: createdFile.id,
+              externalId: "launch-md",
+              externalKey: "launch.md",
+              title: "launch.md",
+              repository: "Ahnd6474/experiment",
+              branch: "main",
+              status: "pending",
             },
           ],
         });
+        const selectorSnapshot = repository.upsertIntegrationRecord("github", {
+          id: "github-project-hub",
+          entityType: "project",
+          entityId: createdProject.id,
+          externalId: "repo-1",
+          externalKey: "Ahnd6474/experiment#client-hub",
+          title: "Client hub",
+          repository: "Ahnd6474/experiment",
+          branch: "main",
+          status: "synced",
+          metadata: {
+            panel: "hub",
+          },
+        });
+        const projectBoard = selectProjectBoard(selectorSnapshot);
+        const taskBoard = selectTaskBoard(selectorSnapshot);
+        const ideaBoard = selectIdeaBoard(selectorSnapshot);
+        const rootFolderTree = selectFileTree(selectorSnapshot, "file-shell-root");
+        const projectDetail = selectWorkspaceDetail(
+          selectorSnapshot,
+          "project",
+          createdProject.id,
+        );
+        const taskDetail = selectWorkspaceDetail(selectorSnapshot, "task", createdTask.id);
+        const ideaDetail = selectWorkspaceDetail(selectorSnapshot, "idea", createdIdea.id);
+        const fileDetail = selectWorkspaceDetail(selectorSnapshot, "file", createdFile.id);
+        const integrationOverview = selectIntegrationOverview(selectorSnapshot);
         const afterDeleteProject = repository.deleteProject(createdProject.id);
-        const rootFolderAfterMove = movedFileSnapshot.files.find((file) => file.id === "file-shell-root");
         const deletedTask = afterDeleteProject.tasks.find((task) => task.id === createdTask.id);
         const deletedFile = afterDeleteProject.files.find((file) => file.id === createdFile.id);
+        const activeProjects = projectBoard.groups.find((group) => group.key === "active");
+        const inProgressTasks = taskBoard.groups.find((group) => group.key === "in_progress");
+        const promotedIdeas = ideaBoard.groups.find((group) => group.key === "promoted");
 
         console.log(JSON.stringify({
           seededSchemaVersion: seeded.meta.schemaVersion,
           seededJakalFlowRecords: seeded.integrations.jakalFlow.records.length,
           seededGitHubRecords: seeded.integrations.github.records.length,
           seededRootFileIds: seeded.fileHierarchy.rootFileIds,
-          createdProjectId: createdProject.id,
-          createdProjectStatus: createdProject.status,
-          createdTaskId: createdTask.id,
-          createdTaskProjectId: createdTask.projectId,
-          linkedProjectTaskIds: createdTaskSnapshot.projects.find((project) => project.id === createdProject.id).taskIds,
+          movedProjectStatus: movedProject.status,
+          activeProjectIds: activeProjects.items.map((item) => item.entity.id),
+          linkedProjectTaskIds: linkedTaskSnapshot.projects.find((project) => project.id === createdProject.id).taskIds,
+          movedTaskStatus: movedTaskSnapshot.tasks.find((task) => task.id === createdTask.id).status,
+          inProgressTaskIds: inProgressTasks.items.map((item) => item.entity.id),
+          inProgressTaskOrders: inProgressTasks.items.map((item) => item.entity.order),
+          validatedIdeaStage: movedIdeaSnapshot.ideas.find((idea) => idea.id === createdIdea.id).stage,
           promotedIdeaId: promotedIdea.id,
           promotedIdeaStage: promotedIdea.stage,
           promotedIdeaProjectId: promotedIdea.promotedProjectId,
           promotedProjectIdeaIds: promotedProject.ideaIds,
+          promotedIdeaIds: promotedIdeas.items.map((item) => item.entity.id),
+          unlinkedFileIdeaIds: unlinkedFileSnapshot.files.find((file) => file.id === createdFile.id).ideaIds,
           movedFileParentId: movedFileSnapshot.files.find((file) => file.id === createdFile.id).parentId,
-          rootFolderChildIds: rootFolderAfterMove.childIds,
-          jakalFlowRecordIds: githubSnapshot.integrations.jakalFlow.records.map((record) => record.id),
-          githubRecordIds: githubSnapshot.integrations.github.records.map((record) => record.id),
+          rootFolderChildIds: rootFolderTree.roots.map((node) => node.entity.id),
+          cycleError,
+          jakalFlowRecordIds: selectorSnapshot.integrations.jakalFlow.records.map((record) => record.id),
+          githubRecordIds: selectorSnapshot.integrations.github.records.map((record) => record.id),
+          projectDetailTaskIds: projectDetail.related.tasks.map((task) => task.id),
+          projectDetailIdeaIds: projectDetail.related.ideas.map((idea) => idea.id),
+          projectDetailFileIds: projectDetail.related.files.map((file) => file.id),
+          projectSyncStatus: projectDetail.integration.status,
+          projectIntegrationPanel: projectDetail.integrationRecords[0].metadata.panel,
+          taskDetailProjectId: taskDetail.related.projects[0].id,
+          taskSyncStatus: taskDetail.integration.status,
+          ideaSyncStatus: ideaDetail.integration.status,
+          ideaPromotedProjectId: ideaDetail.related.promotedProject.id,
+          fileSyncStatus: fileDetail.integration.status,
+          filePathIds: fileDetail.related.path.map((file) => file.id),
+          fileIdeaIds: fileDetail.related.ideas.map((idea) => idea.id),
+          integrationOverview: integrationOverview.providers.map((provider) => ({
+            key: provider.key,
+            status: provider.connectionStatus,
+            recordCount: provider.recordCount,
+            countsByEntity: provider.countsByEntity,
+          })),
           deletedTaskProjectId: deletedTask.projectId,
           deletedFileProjectIds: deletedFile.projectIds,
           storedSchemaVersion: JSON.parse(storage.getItem("jakal.workspace.snapshot")).meta.schemaVersion,
@@ -274,19 +408,53 @@ def test_repository_runtime_persists_v3_snapshot_and_relation_safe_mutations():
     assert payload["seededJakalFlowRecords"] == 2
     assert payload["seededGitHubRecords"] == 2
     assert payload["seededRootFileIds"] == ["file-shell-root"]
-    assert payload["createdProjectStatus"] == "planned"
+    assert payload["movedProjectStatus"] == "active"
+    assert payload["activeProjectIds"][0]
+    assert payload["movedTaskStatus"] == "in_progress"
+    assert payload["inProgressTaskOrders"] == list(range(len(payload["inProgressTaskIds"])))
+    assert payload["validatedIdeaStage"] == "validated"
     assert payload["movedFileParentId"] == "file-shell-root"
-    assert payload["jakalFlowRecordIds"] == ["valid-task-sync"]
-    assert payload["githubRecordIds"] == ["gh-project"]
+    assert payload["cycleError"] == "A file cannot move into one of its descendants."
+    assert payload["jakalFlowRecordIds"] == ["valid-task-sync", "valid-idea-sync"]
+    assert payload["githubRecordIds"] == ["github-project-hub", "github-file-launch"]
     assert payload["deletedTaskProjectId"] is None
     assert payload["deletedFileProjectIds"] == []
     assert payload["storedSchemaVersion"] == 3
-    assert payload["createdTaskProjectId"] == payload["createdProjectId"]
-    assert payload["linkedProjectTaskIds"] == [payload["createdTaskId"]]
+    assert payload["linkedProjectTaskIds"] == [payload["inProgressTaskIds"][0]]
     assert payload["promotedIdeaStage"] == "promoted"
     assert payload["promotedIdeaProjectId"]
     assert payload["promotedProjectIdeaIds"] == [payload["promotedIdeaId"]]
+    assert payload["promotedIdeaIds"] == [payload["promotedIdeaId"]]
+    assert payload["unlinkedFileIdeaIds"] == []
+    assert payload["projectDetailTaskIds"] == [payload["inProgressTaskIds"][0]]
+    assert payload["projectDetailIdeaIds"] == [payload["promotedIdeaId"]]
+    assert len(payload["projectDetailFileIds"]) == 1
+    assert payload["projectSyncStatus"] == "synced"
+    assert payload["projectIntegrationPanel"] == "hub"
+    assert payload["taskSyncStatus"] == "synced"
+    assert payload["ideaSyncStatus"] == "pending"
+    assert payload["taskDetailProjectId"] == payload["activeProjectIds"][0]
+    assert payload["ideaPromotedProjectId"] == payload["promotedIdeaProjectId"]
+    assert payload["fileSyncStatus"] == "pending"
+    assert payload["fileIdeaIds"] == [payload["promotedIdeaId"]]
+    assert payload["filePathIds"][0] == "file-shell-root"
+    assert payload["filePathIds"][-1] in payload["rootFolderChildIds"]
+    assert payload["rootFolderChildIds"][0] == payload["filePathIds"][-1]
     assert "file-shell-guide" in payload["rootFolderChildIds"]
+    assert payload["integrationOverview"] == [
+        {
+            "key": "jakalFlow",
+            "status": "connected",
+            "recordCount": 2,
+            "countsByEntity": {"task": 1, "idea": 1},
+        },
+        {
+            "key": "github",
+            "status": "connected",
+            "recordCount": 2,
+            "countsByEntity": {"project": 1, "file": 1},
+        },
+    ]
 
 
 def test_repository_migrates_legacy_snapshot_to_v3_shape():

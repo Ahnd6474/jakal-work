@@ -565,6 +565,9 @@ function cloneEntityMaps(entities) {
 }
 
 function finalizeFileHierarchy(files, rootFileIds) {
+  const explicitChildOrderByParent = new Map(
+    files.map((file) => [file.id, normalizeIdArray(file.childIds)]),
+  );
   const fileLookup = new Map(
     files.map((file) => [
       file.id,
@@ -634,6 +637,14 @@ function finalizeFileHierarchy(files, rootFileIds) {
     }
 
     pushUnique(parentFile.childIds, file.id);
+  });
+
+  fileLookup.forEach((file) => {
+    const explicitChildIds = explicitChildOrderByParent.get(file.id) ?? [];
+    file.childIds = [
+      ...explicitChildIds.filter((childId) => file.childIds.includes(childId)),
+      ...file.childIds.filter((childId) => !explicitChildIds.includes(childId)),
+    ];
   });
 
   const normalizedFiles = [...fileLookup.values()].map((file) => ({
